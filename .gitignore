@@ -1,0 +1,8 @@
+node_modules
+data
+*.db
+*.db-*
+.DS_Store
+# the real roster (kids' names) stays off GitHub; see README
+/roster.json
+.claude/

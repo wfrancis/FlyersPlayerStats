@@ -1,0 +1,18 @@
+{
+  "name": "team-stats",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dead-simple per-game goals, assists and plus/minus tracker for a youth hockey team",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
