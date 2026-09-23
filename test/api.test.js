@@ -291,6 +291,22 @@ describe('stats', () => {
     await s.call('DELETE', `/api/players/${kid}`);
   });
 
+  test('a tap that was undone does not turn "–" into 0', async () => {
+    const g1 = await newGame('2025-12-20', 'Undo SOG', [P(87), P(5)]);
+    await send(g1, [tap(87, 'g')]); // stats entered, shots not tracked
+    await send(g1, [tap(5, 's'), tap(5, 's', -1)]); // accidental + SOG, then Undo
+    const d = (await s.call('GET', `/api/games/${g1}`)).data;
+    assert.deepEqual([d.tracked.any, d.tracked.s], [1, 0]);
+    assert.equal((await s.call('GET', `/api/players/${P(87)}`)).data.games.find((g) => g.game_id === g1).s, null);
+    const g2 = await newGame('2025-12-21', 'Undo empty', [P(87), P(5)]);
+    await send(g2, [tap(5, 'g'), tap(5, 'g', -1)]); // accidental + Goal, then Undo, on an empty game
+    const e = (await s.call('GET', `/api/games/${g2}`)).data;
+    assert.deepEqual([e.tracked.any, e.tracked.s], [0, 0]);
+    const row = (await s.call('GET', `/api/players/${P(5)}`)).data.games.find((g) => g.game_id === g2);
+    assert.deepEqual([row.g, row.a, row.pts, row.pm, row.s], [null, null, null, null, null]);
+    for (const g of [g1, g2]) await s.call('DELETE', `/api/games/${g}`);
+  });
+
   test('CSV export', async () => {
     const { status, data, headers } = await s.call('GET', '/api/stats.csv');
     assert.equal(status, 200);

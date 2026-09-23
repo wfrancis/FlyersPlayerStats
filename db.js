@@ -366,8 +366,10 @@ class Store {
       score: { us: score.us, them: score.them },
       played: !!score.played,
       // Anything entered for this game at all / any shots? The board shows – until then.
-      tracked: this.q(`SELECT EXISTS (SELECT 1 FROM stat_events WHERE game_id = ?1) AS any,
-                              EXISTS (SELECT 1 FROM stat_events WHERE game_id = ?1 AND stat = 's') AS s`).get(id),
+      // A tap that was undone (+1 then −1) doesn't count as entered.
+      tracked: this.q(`SELECT
+          EXISTS (SELECT 1 FROM stat_events WHERE game_id = ?1 GROUP BY player_id, stat HAVING SUM(delta) <> 0) AS any,
+          EXISTS (SELECT 1 FROM stat_events WHERE game_id = ?1 AND stat = 's' GROUP BY player_id HAVING SUM(delta) <> 0) AS s`).get(id),
       dressed,
       stats: players,
       other_phones: others,
@@ -496,8 +498,11 @@ class Store {
     }
     // "–" instead of 0 when nothing was entered: a player's G/A/+/− count once any of their games has
     // stats entered; shots count once any of their games had shots tracked.
-    const gameFlags = new Map(this.q(`SELECT game_id, MAX(stat = 's') AS s FROM stat_events GROUP BY game_id`).all()
-      .map((r) => [r.game_id, { s: !!r.s }]));
+    // (a tap that was undone doesn't count as entered)
+    const gameFlags = new Map(this.q(`
+      SELECT game_id, MAX(stat = 's') AS s FROM (
+        SELECT game_id, stat FROM stat_events GROUP BY game_id, player_id, stat HAVING SUM(delta) <> 0)
+      GROUP BY game_id`).all().map((r) => [r.game_id, { s: !!r.s }]));
     const gamesOf = new Map();
     const addGame = (pid, gid) => {
       if (!gamesOf.has(pid)) gamesOf.set(pid, new Set());
@@ -537,8 +542,10 @@ class Store {
              (SELECT COALESCE(SUM(delta), 0) FROM stat_events e WHERE e.game_id = g.id AND e.player_id = ?1 AND e.stat = 'a')  AS pa,
              (SELECT COALESCE(SUM(delta), 0) FROM stat_events e WHERE e.game_id = g.id AND e.player_id = ?1 AND e.stat = 'pm') AS ppm,
              (SELECT COALESCE(SUM(delta), 0) FROM stat_events e WHERE e.game_id = g.id AND e.player_id = ?1 AND e.stat = 's')  AS ps,
-             EXISTS (SELECT 1 FROM stat_events e WHERE e.game_id = g.id) AS has_stats,
-             EXISTS (SELECT 1 FROM stat_events e WHERE e.game_id = g.id AND e.stat = 's') AS has_shots
+             EXISTS (SELECT 1 FROM stat_events e WHERE e.game_id = g.id
+                     GROUP BY e.player_id, e.stat HAVING SUM(e.delta) <> 0) AS has_stats,
+             EXISTS (SELECT 1 FROM stat_events e WHERE e.game_id = g.id AND e.stat = 's'
+                     GROUP BY e.player_id HAVING SUM(e.delta) <> 0) AS has_shots
       FROM games g
       WHERE EXISTS (SELECT 1 FROM game_players gp WHERE gp.game_id = g.id AND gp.player_id = ?1)
          OR EXISTS (SELECT 1 FROM stat_events e WHERE e.game_id = g.id AND e.player_id = ?1)

@@ -79,9 +79,10 @@
   }
   // null = nothing entered for that game/season → shown as "–" (not the same as 0).
   const DASH = '–';
-  const fmtPM = (n) => (n === null ? DASH : n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0');
+  // (undefined too: stats saved on the phone by an older version have no shots field)
+  const fmtPM = (n) => (n == null ? DASH : n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0');
   const pmCls = (n) => (n > 0 ? 'pos' : n < 0 ? 'neg' : 'zero');
-  const numCell = (v, cls = '') => `<td class="${cls} ${v ? '' : 'zero'}">${v === null ? DASH : v}</td>`;
+  const numCell = (v, cls = '') => `<td class="${cls} ${v ? '' : 'zero'}">${v == null ? DASH : v}</td>`;
   const pmCell = (v) => `<td class="${pmCls(v)}">${fmtPM(v)}</td>`;
   const resultOf = (us, them) => (us > them ? 'W' : us < them ? 'L' : 'T');
   const toId = (s) => {
@@ -615,9 +616,19 @@
     return S.game.score.us + S.queue.filter((x) => x.gameId === gid && x.payload.stat === 'g').reduce((n, x) => n + x.payload.delta, 0);
   }
   const pendingCount = () => S.queue.filter((x) => x.gameId === S.game.game.id).length;
-  const statsTracked = () => !!S.game.tracked?.any || pendingCount() > 0;
-  const shotsTracked = () => !!S.game.tracked?.s
-    || S.queue.some((x) => x.gameId === S.game.game.id && x.payload.stat === 's');
+  // Something entered on this phone that hasn't reached the server yet (a tap + its undo cancel out).
+  function pendingEntered(stat) {
+    const net = new Map();
+    for (const x of S.queue) {
+      if (x.gameId !== S.game.game.id || (stat && x.payload.stat !== stat)) continue;
+      const k = `${x.payload.player_id}:${x.payload.stat}`;
+      net.set(k, (net.get(k) || 0) + x.payload.delta);
+    }
+    return [...net.values()].some((n) => n !== 0);
+  }
+  // A game saved on the phone by an older version has no "tracked" info: treat its stats as entered.
+  const statsTracked = () => (S.game.tracked ? !!S.game.tracked.any : true) || pendingEntered();
+  const shotsTracked = () => !!S.game.tracked?.s || pendingEntered('s');
 
   function boardPlayers() {
     const inGame = new Set(S.game.stats.map((r) => r.id));
