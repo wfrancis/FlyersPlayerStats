@@ -261,12 +261,42 @@ describe('stats', () => {
     await s.call('DELETE', `/api/games/${gid}`);
   });
 
+  test('shots on goal: counted per player; "–" (null) where nothing was entered', async () => {
+    const g1 = await newGame('2025-12-10', 'SOG One', [P(87), P(5), P(13)]);
+    const g2 = await newGame('2025-12-11', 'SOG Two', [P(87), P(5), P(13)]); // shots not tracked
+    const g3 = await newGame('2025-12-12', 'Nothing entered', [P(87), P(5), P(13)]);
+    const r = await send(g1, [tap(87, 's'), tap(87, 's'), tap(87, 's', -1), tap(87, 's'), tap(5, 's'), tap(5, 's', -1), tap(5, 's', -1)]);
+    assert.equal(statFor(r.data.game.stats, P(87)).s, 2);
+    assert.equal(statFor(r.data.game.stats, P(5)).s, 0); // never below 0
+    assert.equal(r.data.game.tracked.s, 1);
+    await send(g2, [tap(13, 'g')]);
+    const b2 = (await s.call('GET', `/api/games/${g2}`)).data;
+    assert.deepEqual([b2.tracked.any, b2.tracked.s], [1, 0]);
+
+    const pd = (await s.call('GET', `/api/players/${P(13)}`)).data;
+    const row = (gid) => pd.games.find((g) => g.game_id === gid);
+    assert.deepEqual([row(g1).g, row(g1).s], [0, 0]); // stats + shots were entered in game 1: real zeros
+    assert.deepEqual([row(g2).g, row(g2).s], [1, null]); // game 2: goals entered, shots not tracked
+    assert.deepEqual([row(g3).g, row(g3).a, row(g3).pts, row(g3).pm, row(g3).s], [null, null, null, null, null]); // nothing entered
+    assert.equal(pd.totals.s, 0);
+
+    const season = (await s.call('GET', '/api/stats')).data;
+    assert.equal(statFor(season.players, P(87)).s, 2);
+    // a player who only played in untracked games shows – everywhere
+    const kid = (await s.call('POST', '/api/players', { name: 'New Kid', number: 44 })).data.player.id;
+    await s.call('PUT', `/api/games/${g3}`, { player_ids: [P(87), P(5), P(13), kid] });
+    const k = statFor((await s.call('GET', '/api/stats')).data.players, kid);
+    assert.deepEqual([k.gp, k.g, k.a, k.pts, k.pm, k.s], [1, null, null, null, null, null]);
+    for (const g of [g1, g2, g3]) await s.call('DELETE', `/api/games/${g}`);
+    await s.call('DELETE', `/api/players/${kid}`);
+  });
+
   test('CSV export', async () => {
     const { status, data, headers } = await s.call('GET', '/api/stats.csv');
     assert.equal(status, 200);
     assert.match(headers.get('content-type'), /text\/csv/);
-    assert.match(data, /^Number,Player,Positions played,Games,Goals,Assists,Points,Plus\/Minus\r\n/);
-    assert.match(data, /87,Riley Frost,,7,5,0,5,2/);
+    assert.match(data, /^Number,Player,Positions played,Games,Goals,Assists,Points,Plus\/Minus,Shots on goal\r\n/);
+    assert.match(data, /87,Riley Frost,,7,5,0,5,2,-\r\n/); // no shots tracked yet -> "-" 
   });
 
   test('delete game removes its stats from season totals', async () => {
@@ -378,11 +408,55 @@ describe('upgrading a database from the first release', () => {
     assert.ok(!playerCols.includes('position'));
     assert.ok(lineupCols.includes('position'));
     assert.equal(store.listPlayers().length, 2);
-    assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 2);
+    assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
     store.close();
     const again = openDb(file); // running again is a no-op
     assert.equal(again.listPlayers().length, 2);
     again.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('upgrading the live database (v2) to shots on goal', () => {
+  test('keeps every tap and accepts shots afterwards', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const { openDb } = require('../db');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-stats-sog-'));
+    const file = path.join(dir, 'v2.db');
+    const old = new DatabaseSync(file);
+    old.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO meta VALUES ('seeded', 'x');
+      CREATE TABLE players (id INTEGER PRIMARY KEY, name TEXT NOT NULL, number INTEGER, active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')));
+      CREATE TABLE games (id INTEGER PRIMARY KEY, date TEXT NOT NULL, opponent TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+      CREATE TABLE game_players (game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE, position TEXT CHECK (position IN ('C', 'W', 'D')),
+        PRIMARY KEY (game_id, player_id));
+      CREATE TABLE stat_events (id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        player_id INTEGER REFERENCES players(id) ON DELETE CASCADE, stat TEXT NOT NULL CHECK (stat IN ('g', 'a', 'pm', 'opp')),
+        delta INTEGER NOT NULL CHECK (delta IN (-1, 1)), client_id TEXT UNIQUE, device_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')), CHECK ((stat = 'opp') = (player_id IS NULL)));
+      INSERT INTO players (id, name, number) VALUES (1, 'Riley Frost', 87);
+      INSERT INTO games (id, date, opponent) VALUES (1, '2025-09-20', 'Old');
+      INSERT INTO game_players VALUES (1, 1, 'C');
+      INSERT INTO stat_events (game_id, player_id, stat, delta, client_id) VALUES (1, 1, 'g', 1, 'old-tap-0001'), (1, 1, 'pm', 1, 'old-tap-0002');
+      INSERT INTO stat_events (game_id, player_id, stat, delta, client_id) VALUES (1, NULL, 'opp', 1, 'old-tap-0003');
+      PRAGMA user_version = 2;`);
+    old.close();
+    const store = openDb(file);
+    assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
+    let g = store.getGame(1);
+    assert.deepEqual(g.score, { us: 1, them: 1 });
+    assert.equal(g.stats[0].pm, 1);
+    const r = store.addTaps(1, [{ client_id: 'new-shot-0001', player_id: 1, stat: 's', delta: 1 },
+      { client_id: 'old-tap-0001', player_id: 1, stat: 'g', delta: 1 }]); // resent old tap still deduped
+    assert.equal(r.applied, 1);
+    g = store.getGame(1);
+    assert.deepEqual([g.stats[0].g, g.stats[0].s], [1, 1]);
+    const idx = store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'stat_events'").all().map((x) => x.name);
+    assert.ok(idx.includes('stat_events_game_idx') && idx.includes('stat_events_player_idx'));
+    store.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

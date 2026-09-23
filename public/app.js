@@ -77,8 +77,12 @@
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
-  const fmtPM = (n) => (n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0');
+  // null = nothing entered for that game/season → shown as "–" (not the same as 0).
+  const DASH = '–';
+  const fmtPM = (n) => (n === null ? DASH : n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0');
   const pmCls = (n) => (n > 0 ? 'pos' : n < 0 ? 'neg' : 'zero');
+  const numCell = (v, cls = '') => `<td class="${cls} ${v ? '' : 'zero'}">${v === null ? DASH : v}</td>`;
+  const pmCell = (v) => `<td class="${pmCls(v)}">${fmtPM(v)}</td>`;
   const resultOf = (us, them) => (us > them ? 'W' : us < them ? 'L' : 'T');
   const toId = (s) => {
     const n = Number(s);
@@ -611,6 +615,9 @@
     return S.game.score.us + S.queue.filter((x) => x.gameId === gid && x.payload.stat === 'g').reduce((n, x) => n + x.payload.delta, 0);
   }
   const pendingCount = () => S.queue.filter((x) => x.gameId === S.game.game.id).length;
+  const statsTracked = () => !!S.game.tracked?.any || pendingCount() > 0;
+  const shotsTracked = () => !!S.game.tracked?.s
+    || S.queue.some((x) => x.gameId === S.game.game.id && x.payload.stat === 's');
 
   function boardPlayers() {
     const inGame = new Set(S.game.stats.map((r) => r.id));
@@ -682,6 +689,12 @@
         ${statCtrl(p, 'a', 'Assists')}
         ${statCtrl(p, 'pm', 'Plus/minus')}
       </div>
+      <div class="pc-sog">
+        <span class="pc-sog-label">Shots on goal</span>
+        <button type="button" class="pc-btn minus" data-action="tap" data-pid="${p.id}" data-stat="s" data-d="-1" aria-label="Minus one: Shots on goal for ${esc(p.name)}">−</button>
+        <span class="pc-val" data-k="${p.id}:s">0</span>
+        <button type="button" class="pc-btn plus pc-sog-plus" data-action="tap" data-pid="${p.id}" data-stat="s" data-d="1" aria-label="Plus one: Shots on goal for ${esc(p.name)}">+ SOG</button>
+      </div>
     </div>`;
   }
 
@@ -707,8 +720,10 @@
       else {
         const [pid, stat] = k.split(':');
         const v = val(Number(pid), stat);
-        text = stat === 'pm' ? fmtPM(v) : String(v);
-        el.className = `pc-val ${stat === 'pm' ? pmCls(v) : v ? '' : 'zero'}`;
+        // "–" until something is entered for this game (shots: until anyone's shots on goal are tracked).
+        const tracked = stat === 's' ? shotsTracked() : statsTracked();
+        text = !tracked ? DASH : stat === 'pm' ? fmtPM(v) : String(v);
+        el.className = `pc-val ${!tracked ? 'zero' : stat === 'pm' ? pmCls(v) : v ? '' : 'zero'}`;
       }
       if (el.textContent !== text) el.textContent = text;
     }
@@ -739,7 +754,7 @@
   }
 
   // Undo always sits in the same spot (the sticky bar) — it never pops up under a finger.
-  const STAT_WORD = { g: 'goal', a: 'assist', pm: '+/−', opp: 'their goal' };
+  const STAT_WORD = { g: 'goal', a: 'assist', pm: '+/−', s: 'shot on goal', opp: 'their goal' };
   function paintUndo() {
     const btn = document.getElementById('undo-btn');
     if (!btn) return;
@@ -867,6 +882,7 @@
     { key: 'a', label: 'A', cls: '' },
     { key: 'pts', label: 'PTS', cls: '' },
     { key: 'pm', label: '+/−', cls: '' },
+    { key: 's', label: 'SOG', cls: '', title: 'Shots on goal' },
   ];
 
   function statsTable(rows) {
@@ -874,18 +890,14 @@
     const head = COLS.map((c) => {
       const sorted = S.statsSort.key === c.key;
       const arrow = sorted ? (S.statsSort.dir < 0 ? ' ▼' : ' ▲') : '';
-      return `<th class="${c.cls} sortable ${sorted ? 'sorted' : ''}" data-action="sort" data-key="${c.key}" scope="col">${c.label}${arrow}</th>`;
+      return `<th class="${c.cls} sortable ${sorted ? 'sorted' : ''}" data-action="sort" data-key="${c.key}" scope="col"${c.title ? ` title="${c.title}"` : ''}>${c.label}${arrow}</th>`;
     }).join('');
     const body = rows.map((r) => {
       const [first, last] = splitName(r.name);
       return `<tr>
         <td><span class="num-badge">${esc(numOf(r))}</span></td>
         <td class="left name"><a href="#/player/${r.id}">${esc(last)}<span class="tn-first">${esc(withPos(first, r))}</span></a></td>
-        <td class="${r.gp ? '' : 'zero'}">${r.gp}</td>
-        <td class="${r.g ? '' : 'zero'}">${r.g}</td>
-        <td class="${r.a ? '' : 'zero'}">${r.a}</td>
-        <td class="pts ${r.pts ? '' : 'zero'}">${r.pts}</td>
-        <td class="${pmCls(r.pm)}">${fmtPM(r.pm)}</td>
+        ${numCell(r.gp)}${numCell(r.g)}${numCell(r.a)}${numCell(r.pts, 'pts')}${pmCell(r.pm)}${numCell(r.s)}
       </tr>`;
     }).join('');
     return `<div class="table-wrap"><table class="stats"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
@@ -893,13 +905,16 @@
 
   function sortRows(rows) {
     const { key, dir } = S.statsSort;
+    // "–" (nothing entered) sorts below every number, whichever way the column is sorted.
     const v = (r) => (key === 'name' ? splitName(r.name)[1].toLowerCase() : key === 'number' ? (r.number ?? 999) : r[key]);
+    const n = (x) => (x === null ? -Infinity : x);
     return [...rows].sort((a, b) => {
       const x = v(a);
       const y = v(b);
+      if ((x === null) !== (y === null)) return x === null ? 1 : -1;
       if (x < y) return -dir;
       if (x > y) return dir;
-      return b.pts - a.pts || b.g - a.g || b.pm - a.pm || byNum(a, b);
+      return n(b.pts) - n(a.pts) || n(b.g) - n(a.g) || n(b.pm) - n(a.pm) || byNum(a, b);
     });
   }
 
@@ -945,21 +960,20 @@
         <div><div class="muted">${esc(withPos(first, p))}${p.active ? '' : ' · not on team'}</div><h1>${esc(last)}</h1></div>
       </div>
       <div class="table-wrap"><table class="stats"><thead><tr>
-        <th scope="col">GP</th><th scope="col">G</th><th scope="col">A</th><th scope="col">PTS</th><th scope="col">+/−</th>
+        <th scope="col">GP</th><th scope="col">G</th><th scope="col">A</th><th scope="col">PTS</th><th scope="col">+/−</th><th scope="col" title="Shots on goal">SOG</th>
       </tr></thead><tbody><tr>
-        <td>${t.gp}</td><td>${t.g}</td><td>${t.a}</td><td class="pts">${t.pts}</td><td class="${pmCls(t.pm)}">${fmtPM(t.pm)}</td>
+        ${numCell(t.gp)}${numCell(t.g)}${numCell(t.a)}${numCell(t.pts, 'pts')}${pmCell(t.pm)}${numCell(t.s)}
       </tr></tbody></table></div>
       <h2 class="section-title">Game by game</h2>
       ${d.games.length ? `<div class="table-wrap"><table class="stats"><thead><tr>
-        <th class="left" scope="col">Game</th><th scope="col">G</th><th scope="col">A</th><th scope="col">PTS</th><th scope="col">+/−</th>
+        <th class="left" scope="col">Game</th><th scope="col">G</th><th scope="col">A</th><th scope="col">PTS</th><th scope="col">+/−</th><th scope="col" title="Shots on goal">SOG</th>
       </tr></thead><tbody>${d.games.map((g) => {
         const r = resultOf(g.us, g.them);
         const res = g.played ? `<span class="res-txt res-txt-${r}">${r} ${g.us}–${g.them}</span>` : `${g.us}–${g.them}`;
         return `<tr>
           <td class="left"><a class="pg-link" href="#/game/${g.game_id}"><span class="pg-opp">vs ${esc(g.opponent)}</span>
             <span class="pg-meta">${esc(fmtDate(g.date))} · ${res}${POS[g.position] ? ` · ${POS[g.position]}` : ''}</span></a></td>
-          <td class="${g.g ? '' : 'zero'}">${g.g}</td><td class="${g.a ? '' : 'zero'}">${g.a}</td>
-          <td class="pts ${g.pts ? '' : 'zero'}">${g.pts}</td><td class="${pmCls(g.pm)}">${fmtPM(g.pm)}</td>
+          ${numCell(g.g)}${numCell(g.a)}${numCell(g.pts, 'pts')}${pmCell(g.pm)}${numCell(g.s)}
         </tr>`;
       }).join('')}</tbody></table></div>` : '<div class="empty small">No games yet.</div>'}`);
   }

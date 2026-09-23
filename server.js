@@ -32,7 +32,7 @@ function safeEqual(a, b) {
 
 function csvCell(v) {
   let s = String(v ?? '');
-  if (/^[=+\-@\t\r]/.test(s) && !/^[+-]?\d+$/.test(s)) s = `'${s}`; // no spreadsheet formulas
+  if (/^[=+\-@\t\r]/.test(s) && !/^[+-]?\d+$/.test(s) && s !== '-') s = `'${s}`; // no spreadsheet formulas
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -147,9 +147,12 @@ function createApp({ dbPath, teamCode = '', teamName = 'Our Team', secure = fals
 
   api.get('/stats.csv', (req, res) => {
     const s = store.seasonStats();
-    const rows = [['Number', 'Player', 'Positions played', 'Games', 'Goals', 'Assists', 'Points', 'Plus/Minus']];
-    for (const p of s.players.sort((a, b) => b.pts - a.pts || b.g - a.g || b.pm - a.pm)) {
-      rows.push([p.number ?? '', p.name, p.positions.map((x) => POSITIONS[x]).join('/'), p.gp, p.g, p.a, p.pts, p.pm]);
+    // "-" = nothing entered (not the same as 0).
+    const cell = (v) => (v === null ? '-' : v);
+    const rows = [['Number', 'Player', 'Positions played', 'Games', 'Goals', 'Assists', 'Points', 'Plus/Minus', 'Shots on goal']];
+    for (const p of s.players.sort((a, b) => (b.pts ?? -1) - (a.pts ?? -1) || (b.g ?? -1) - (a.g ?? -1) || (b.pm ?? 0) - (a.pm ?? 0))) {
+      rows.push([p.number ?? '', p.name, p.positions.map((x) => POSITIONS[x]).join('/'), p.gp,
+        cell(p.g), cell(p.a), cell(p.pts), cell(p.pm), cell(p.s)]);
     }
     res.set('Content-Disposition', 'attachment; filename="season-stats.csv"');
     res.type('text/csv').send(rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n');

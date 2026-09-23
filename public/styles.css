@@ -235,6 +235,14 @@ h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; letter-sp
 .pc-btn.minus.pm { background: var(--red); color: #fff; border: 0; }
 .pc-btn:disabled { opacity: .3; }
 .pc-val { flex: 1; min-width: 0; font: 700 22px/1 var(--display); letter-spacing: -.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Shots on goal: the most-tapped stat, so the + is a wide button on its own row. */
+.pc-sog {
+  display: flex; align-items: center; gap: 4px; margin-top: 5px; padding: 3px 3px 3px 10px;
+  background: #f3f5f8; border-radius: 14px;
+}
+.pc-sog-label { flex: 1; min-width: 0; font: 700 12px/1.1 var(--body); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.pc-sog .pc-val { flex: 0 0 40px; text-align: center; }
+.pc-btn.pc-sog-plus { width: 104px; font-size: 20px; }
 .bump { animation: bump .28s ease-out; }
 @keyframes bump { 0% { transform: scale(1.45); } 100% { transform: scale(1); } }
 
@@ -269,7 +277,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 700; margin: 0; letter-sp
 /* ---------- stats tables ---------- */
 .table-wrap { background: var(--card); border-radius: var(--radius); overflow-x: auto; box-shadow: 0 1px 2px rgba(13,21,32,.06); }
 table.stats { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-.stats th, .stats td { padding: 11px 6px; text-align: center; border-bottom: 1px solid var(--line); }
+.stats th, .stats td { padding: 11px 4px; text-align: center; border-bottom: 1px solid var(--line); }
 .stats tr:last-child td { border-bottom: 0; }
 .stats th {
   font: 700 14px/1 var(--display); text-transform: uppercase; color: var(--muted);
@@ -279,7 +287,7 @@ table.stats { width: 100%; border-collapse: collapse; font-variant-numeric: tabu
 .stats th.sorted { color: var(--blue); }
 .stats th.left, .stats td.left { text-align: left; padding-left: 12px; }
 .stats td { font-size: 17px; font-weight: 600; }
-.stats td.left { max-width: 0; width: 45%; }
+.stats td.left { max-width: 0; width: 38%; }
 .stats td.name { font: 600 17px/1.15 var(--display); text-transform: uppercase; }
 .stats td.name a { color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
 .stats td.pts { font-weight: 800; }

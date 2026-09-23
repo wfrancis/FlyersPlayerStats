@@ -21,9 +21,24 @@ class HttpError extends Error {
 const bad = (msg) => new HttpError(400, msg);
 const notFound = (what) => new HttpError(404, `${what} not found`);
 
-const STATS = ['g', 'a', 'pm', 'opp'];
+// g = goal, a = assist, pm = plus/minus, s = shot, opp = their goal (no player).
+const STATS = ['g', 'a', 'pm', 's', 'opp'];
 const POSITIONS = { C: 'Center', W: 'Wing', D: 'Defense' };
-const NEVER_NEGATIVE = new Set(['g', 'a', 'opp']);
+const NEVER_NEGATIVE = new Set(['g', 'a', 's', 'opp']);
+
+// One row per tap. Shared by the base schema and the migration that added shots.
+const statEventsTable = (name) => `
+CREATE TABLE IF NOT EXISTS ${name} (
+  id         INTEGER PRIMARY KEY,
+  game_id    INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  player_id  INTEGER REFERENCES players(id) ON DELETE CASCADE,
+  stat       TEXT NOT NULL CHECK (stat IN ('g', 'a', 'pm', 's', 'opp')),
+  delta      INTEGER NOT NULL CHECK (delta IN (-1, 1)),
+  client_id  TEXT UNIQUE,
+  device_id  TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK ((stat = 'opp') = (player_id IS NULL))
+);`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -50,18 +65,7 @@ CREATE TABLE IF NOT EXISTS game_players (
   player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
   PRIMARY KEY (game_id, player_id)
 );
--- One row per tap. stat: g = goal, a = assist, pm = plus/minus, opp = their goal (no player).
-CREATE TABLE IF NOT EXISTS stat_events (
-  id         INTEGER PRIMARY KEY,
-  game_id    INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-  player_id  INTEGER REFERENCES players(id) ON DELETE CASCADE,
-  stat       TEXT NOT NULL CHECK (stat IN ('g', 'a', 'pm', 'opp')),
-  delta      INTEGER NOT NULL CHECK (delta IN (-1, 1)),
-  client_id  TEXT UNIQUE,
-  device_id  TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  CHECK ((stat = 'opp') = (player_id IS NULL))
-);
+${statEventsTable('stat_events')}
 CREATE INDEX IF NOT EXISTS stat_events_game_idx ON stat_events(game_id);
 CREATE INDEX IF NOT EXISTS stat_events_player_idx ON stat_events(player_id);
 CREATE INDEX IF NOT EXISTS game_players_player_idx ON game_players(player_id);
@@ -80,6 +84,18 @@ const MIGRATIONS = [
     if (!hasColumn(db, 'game_players', 'position')) {
       db.exec("ALTER TABLE game_players ADD COLUMN position TEXT CHECK (position IN ('C', 'W', 'D'))");
     }
+  },
+  // 3: shots. SQLite can't change a CHECK constraint, so copy the taps into a table that allows 's'.
+  (db) => {
+    const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'stat_events'").get()?.sql || '';
+    if (sql.includes("'s'")) return;
+    db.exec(`${statEventsTable('stat_events_new')}
+      INSERT INTO stat_events_new (id, game_id, player_id, stat, delta, client_id, device_id, created_at)
+        SELECT id, game_id, player_id, stat, delta, client_id, device_id, created_at FROM stat_events;
+      DROP TABLE stat_events;
+      ALTER TABLE stat_events_new RENAME TO stat_events;
+      CREATE INDEX IF NOT EXISTS stat_events_game_idx ON stat_events(game_id);
+      CREATE INDEX IF NOT EXISTS stat_events_player_idx ON stat_events(player_id);`);
   },
 ];
 
@@ -159,9 +175,11 @@ function cleanPositions(v, allowedIds) {
 const LAST_POSITION = `(SELECT gp.position FROM game_players gp JOIN games g ON g.id = gp.game_id
    WHERE gp.player_id = p.id AND gp.position IS NOT NULL ORDER BY g.date DESC, g.id DESC LIMIT 1)`;
 
-function statRow(p, s, gp = 0, extra = {}) {
-  const g = s?.g ?? 0;
-  const a = s?.a ?? 0;
+// s: {g, a, pm, s}. A missing value counts as 0; null means "nothing was entered" (shown as –).
+function statRow(p, s = {}, gp = 0, extra = {}) {
+  const v = (k) => (s?.[k] === undefined ? 0 : s[k]);
+  const g = v('g');
+  const a = v('a');
   return {
     id: p.id,
     name: p.name,
@@ -171,8 +189,9 @@ function statRow(p, s, gp = 0, extra = {}) {
     gp,
     g,
     a,
-    pts: g + a,
-    pm: s?.pm ?? 0,
+    pts: g === null ? null : g + (a ?? 0),
+    pm: v('pm'),
+    s: v('s'),
   };
 }
 
@@ -241,11 +260,12 @@ class Store {
       SELECT player_id,
              SUM(CASE WHEN stat = 'g'  THEN delta ELSE 0 END) AS g,
              SUM(CASE WHEN stat = 'a'  THEN delta ELSE 0 END) AS a,
-             SUM(CASE WHEN stat = 'pm' THEN delta ELSE 0 END) AS pm
+             SUM(CASE WHEN stat = 'pm' THEN delta ELSE 0 END) AS pm,
+             SUM(CASE WHEN stat = 's'  THEN delta ELSE 0 END) AS s
       FROM stat_events
       WHERE player_id IS NOT NULL AND (?1 IS NULL OR game_id = ?1)
       GROUP BY player_id`).all(gameId);
-    return new Map(rows.map((r) => [r.player_id, { g: r.g, a: r.a, pm: r.pm }]));
+    return new Map(rows.map((r) => [r.player_id, { g: r.g, a: r.a, pm: r.pm, s: r.s }]));
   }
 
   // ----- players -----
@@ -345,6 +365,9 @@ class Store {
       game,
       score: { us: score.us, them: score.them },
       played: !!score.played,
+      // Anything entered for this game at all / any shots? The board shows – until then.
+      tracked: this.q(`SELECT EXISTS (SELECT 1 FROM stat_events WHERE game_id = ?1) AS any,
+                              EXISTS (SELECT 1 FROM stat_events WHERE game_id = ?1 AND stat = 's') AS s`).get(id),
       dressed,
       stats: players,
       other_phones: others,
@@ -422,7 +445,7 @@ class Store {
     const clean = taps.map((t) => {
       if (!t || typeof t !== 'object') throw bad('Bad tap');
       const stat = t.stat;
-      if (!STATS.includes(stat)) throw bad('stat must be g, a, pm or opp');
+      if (!STATS.includes(stat)) throw bad('stat must be g, a, pm, s or opp');
       const delta = Number(t.delta);
       if (delta !== 1 && delta !== -1) throw bad('delta must be 1 or -1');
       const playerId = stat === 'opp' ? null : cleanId(t.player_id, 'player');
@@ -471,10 +494,28 @@ class Store {
       if (!positions.has(r.player_id)) positions.set(r.player_id, []);
       positions.get(r.player_id).push(r.position);
     }
+    // "–" instead of 0 when nothing was entered: a player's G/A/+/− count once any of their games has
+    // stats entered; shots count once any of their games had shots tracked.
+    const gameFlags = new Map(this.q(`SELECT game_id, MAX(stat = 's') AS s FROM stat_events GROUP BY game_id`).all()
+      .map((r) => [r.game_id, { s: !!r.s }]));
+    const gamesOf = new Map();
+    const addGame = (pid, gid) => {
+      if (!gamesOf.has(pid)) gamesOf.set(pid, new Set());
+      gamesOf.get(pid).add(gid);
+    };
+    for (const r of this.q('SELECT player_id, game_id FROM game_players').all()) addGame(r.player_id, r.game_id);
+    for (const r of this.q('SELECT DISTINCT player_id, game_id FROM stat_events WHERE player_id IS NOT NULL').all()) addGame(r.player_id, r.game_id);
     const totals = this.totals();
     const players = this.q('SELECT id, name, number, active FROM players').all()
       .filter((p) => p.active || totals.has(p.id) || gp.has(p.id))
-      .map((p) => statRow(p, totals.get(p.id), gp.get(p.id) || 0, { positions: positions.get(p.id) || [] }));
+      .map((p) => {
+        const mine = [...(gamesOf.get(p.id) || [])];
+        const tracked = mine.some((gid) => gameFlags.has(gid));
+        const shots = mine.some((gid) => gameFlags.get(gid)?.s);
+        const t = totals.get(p.id) || { g: 0, a: 0, pm: 0, s: 0 };
+        const vals = tracked ? { g: t.g, a: t.a, pm: t.pm } : { g: null, a: null, pm: null };
+        return statRow(p, { ...vals, s: shots ? t.s : null }, gp.get(p.id) || 0, { positions: positions.get(p.id) || [] });
+      });
     const record = { w: 0, l: 0, t: 0 };
     for (const g of played) record[g.us > g.them ? 'w' : g.us < g.them ? 'l' : 't']++;
     return {
@@ -494,18 +535,29 @@ class Store {
              (SELECT gp.position FROM game_players gp WHERE gp.game_id = g.id AND gp.player_id = ?1) AS position,
              (SELECT COALESCE(SUM(delta), 0) FROM stat_events e WHERE e.game_id = g.id AND e.player_id = ?1 AND e.stat = 'g')  AS pg,
              (SELECT COALESCE(SUM(delta), 0) FROM stat_events e WHERE e.game_id = g.id AND e.player_id = ?1 AND e.stat = 'a')  AS pa,
-             (SELECT COALESCE(SUM(delta), 0) FROM stat_events e WHERE e.game_id = g.id AND e.player_id = ?1 AND e.stat = 'pm') AS ppm
+             (SELECT COALESCE(SUM(delta), 0) FROM stat_events e WHERE e.game_id = g.id AND e.player_id = ?1 AND e.stat = 'pm') AS ppm,
+             (SELECT COALESCE(SUM(delta), 0) FROM stat_events e WHERE e.game_id = g.id AND e.player_id = ?1 AND e.stat = 's')  AS ps,
+             EXISTS (SELECT 1 FROM stat_events e WHERE e.game_id = g.id) AS has_stats,
+             EXISTS (SELECT 1 FROM stat_events e WHERE e.game_id = g.id AND e.stat = 's') AS has_shots
       FROM games g
       WHERE EXISTS (SELECT 1 FROM game_players gp WHERE gp.game_id = g.id AND gp.player_id = ?1)
          OR EXISTS (SELECT 1 FROM stat_events e WHERE e.game_id = g.id AND e.player_id = ?1)
       ORDER BY g.date DESC, g.id DESC`).all(id);
+    // Per game: – (null) when nothing was entered for that game; shots – when shots weren't tracked.
     const perGame = games.map((g) => ({
       game_id: g.id, date: g.date, opponent: g.opponent, us: g.us, them: g.them, played: !!g.played, position: g.position,
-      g: g.pg, a: g.pa, pts: g.pg + g.pa, pm: g.ppm,
+      g: g.has_stats ? g.pg : null,
+      a: g.has_stats ? g.pa : null,
+      pts: g.has_stats ? g.pg + g.pa : null,
+      pm: g.has_stats ? g.ppm : null,
+      s: g.has_shots ? g.ps : null,
     }));
-    const sum = (k) => perGame.reduce((n, g) => n + g[k], 0);
+    const sum = (k) => {
+      const vals = perGame.map((g) => g[k]).filter((x) => x !== null);
+      return vals.length ? vals.reduce((n, x) => n + x, 0) : null;
+    };
     const gp = games.filter((g) => g.dressed && g.played).length;
-    const totals = statRow(p, { g: sum('g'), a: sum('a'), pm: sum('pm') }, gp);
+    const totals = statRow(p, { g: sum('g'), a: sum('a'), pm: sum('pm'), s: sum('s') }, gp);
     return { player: { ...p, active: !!p.active }, totals, games: perGame };
   }
 }
