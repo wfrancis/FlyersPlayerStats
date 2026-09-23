@@ -893,7 +893,6 @@
     { key: 'a', label: 'A', cls: '' },
     { key: 'pts', label: 'PTS', cls: '' },
     { key: 'pm', label: '+/−', cls: '' },
-    { key: 's', label: 'SOG', cls: '', title: 'Shots on goal' },
   ];
 
   function statsTable(rows) {
@@ -908,13 +907,14 @@
       return `<tr>
         <td><span class="num-badge">${esc(numOf(r))}</span></td>
         <td class="left name"><a href="#/player/${r.id}">${esc(last)}<span class="tn-first">${esc(withPos(first, r))}</span></a></td>
-        ${numCell(r.gp)}${numCell(r.g)}${numCell(r.a)}${numCell(r.pts, 'pts')}${pmCell(r.pm)}${numCell(r.s)}
+        ${numCell(r.gp)}${numCell(r.g)}${numCell(r.a)}${numCell(r.pts, 'pts')}${pmCell(r.pm)}
       </tr>`;
     }).join('');
     return `<div class="table-wrap"><table class="stats"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
   function sortRows(rows) {
+    if (!COLS.some((c) => c.key === S.statsSort.key)) S.statsSort = { key: 'pts', dir: -1 };
     const { key, dir } = S.statsSort;
     // "–" (nothing entered) sorts below every number, whichever way the column is sorted.
     const v = (r) => (key === 'name' ? splitName(r.name)[1].toLowerCase() : key === 'number' ? (r.number ?? 999) : r[key]);
@@ -971,9 +971,9 @@
         <div><div class="muted">${esc(withPos(first, p))}${p.active ? '' : ' · not on team'}</div><h1>${esc(last)}</h1></div>
       </div>
       <div class="table-wrap"><table class="stats"><thead><tr>
-        <th scope="col">GP</th><th scope="col">G</th><th scope="col">A</th><th scope="col">PTS</th><th scope="col">+/−</th><th scope="col" title="Shots on goal">SOG</th>
+        <th scope="col">GP</th><th scope="col">G</th><th scope="col">A</th><th scope="col">PTS</th><th scope="col">+/−</th>
       </tr></thead><tbody><tr>
-        ${numCell(t.gp)}${numCell(t.g)}${numCell(t.a)}${numCell(t.pts, 'pts')}${pmCell(t.pm)}${numCell(t.s)}
+        ${numCell(t.gp)}${numCell(t.g)}${numCell(t.a)}${numCell(t.pts, 'pts')}${pmCell(t.pm)}
       </tr></tbody></table></div>
       <h2 class="section-title">Game by game</h2>
       ${d.games.length ? `<div class="table-wrap"><table class="stats"><thead><tr>

@@ -195,6 +195,9 @@ function statRow(p, s = {}, gp = 0, extra = {}) {
   };
 }
 
+// Shots on goal are shown per game only (board + game-by-game rows), never as a season total.
+const withoutShots = ({ s, ...row }) => row;
+
 const byNumber = (a, b) => (a.number ?? 999) - (b.number ?? 999) || a.name.localeCompare(b.name);
 
 // SQL pieces shared by the game list, season record and player log.
@@ -497,10 +500,11 @@ class Store {
       positions.get(r.player_id).push(r.position);
     }
     // Season totals are always numbers (0 when nothing was counted). "–" is only used per game.
+    // Shots on goal are per game only, so they're left out of the season totals.
     const totals = this.totals();
     const players = this.q('SELECT id, name, number, active FROM players').all()
       .filter((p) => p.active || totals.has(p.id) || gp.has(p.id))
-      .map((p) => statRow(p, totals.get(p.id), gp.get(p.id) || 0, { positions: positions.get(p.id) || [] }));
+      .map((p) => withoutShots(statRow(p, totals.get(p.id), gp.get(p.id) || 0, { positions: positions.get(p.id) || [] })));
     const record = { w: 0, l: 0, t: 0 };
     for (const g of played) record[g.us > g.them ? 'w' : g.us < g.them ? 'l' : 't']++;
     return {
@@ -542,7 +546,7 @@ class Store {
     // The season line is always numbers; only the game-by-game rows use –.
     const sum = (k) => perGame.reduce((n, g) => n + (g[k] ?? 0), 0);
     const gp = games.filter((g) => g.dressed && g.played).length;
-    const totals = statRow(p, { g: sum('g'), a: sum('a'), pm: sum('pm'), s: sum('s') }, gp);
+    const totals = withoutShots(statRow(p, { g: sum('g'), a: sum('a'), pm: sum('pm') }, gp)); // SOG: per game only
     return { player: { ...p, active: !!p.active }, totals, games: perGame };
   }
 }

@@ -278,17 +278,17 @@ describe('stats', () => {
     assert.deepEqual([row(g1).g, row(g1).s], [0, 0]); // stats + shots were entered in game 1: real zeros
     assert.deepEqual([row(g2).g, row(g2).s], [1, null]); // game 2: goals entered, shots not tracked
     assert.deepEqual([row(g3).g, row(g3).a, row(g3).pts, row(g3).pm, row(g3).s], [null, null, null, null, null]); // nothing entered
-    assert.equal(pd.totals.s, 0);
+    assert.ok(!('s' in pd.totals)); // SOG is per game only — no season line
 
     const season = (await s.call('GET', '/api/stats')).data;
-    assert.equal(statFor(season.players, P(87)).s, 2);
+    assert.ok(!('s' in statFor(season.players, P(87)))); // no SOG in season totals
     // season totals are always numbers: a player who only played in untracked games shows 0s (– is per game only)
     const kid = (await s.call('POST', '/api/players', { name: 'New Kid', number: 44 })).data.player.id;
     await s.call('PUT', `/api/games/${g3}`, { player_ids: [P(87), P(5), P(13), kid] });
     const k = statFor((await s.call('GET', '/api/stats')).data.players, kid);
-    assert.deepEqual([k.gp, k.g, k.a, k.pts, k.pm, k.s], [1, 0, 0, 0, 0, 0]);
+    assert.deepEqual([k.gp, k.g, k.a, k.pts, k.pm], [1, 0, 0, 0, 0]);
     const kd = (await s.call('GET', `/api/players/${kid}`)).data;
-    assert.deepEqual([kd.totals.g, kd.totals.s], [0, 0]);
+    assert.equal(kd.totals.g, 0);
     assert.equal(kd.games[0].g, null); // but that game's row still shows –
     for (const g of [g1, g2, g3]) await s.call('DELETE', `/api/games/${g}`);
     await s.call('DELETE', `/api/players/${kid}`);
@@ -314,8 +314,8 @@ describe('stats', () => {
     const { status, data, headers } = await s.call('GET', '/api/stats.csv');
     assert.equal(status, 200);
     assert.match(headers.get('content-type'), /text\/csv/);
-    assert.match(data, /^Number,Player,Positions played,Games,Goals,Assists,Points,Plus\/Minus,Shots on goal\r\n/);
-    assert.match(data, /87,Riley Frost,,7,5,0,5,2,0\r\n/); // season totals are numbers, never "-" 
+    assert.match(data, /^Number,Player,Positions played,Games,Goals,Assists,Points,Plus\/Minus\r\n/); // no SOG: per game only
+    assert.match(data, /87,Riley Frost,,7,5,0,5,2\r\n/); // season totals are numbers, never "-" 
   });
 
   test('delete game removes its stats from season totals', async () => {
