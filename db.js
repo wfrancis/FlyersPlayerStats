@@ -496,31 +496,11 @@ class Store {
       if (!positions.has(r.player_id)) positions.set(r.player_id, []);
       positions.get(r.player_id).push(r.position);
     }
-    // "–" instead of 0 when nothing was entered: a player's G/A/+/− count once any of their games has
-    // stats entered; shots count once any of their games had shots tracked.
-    // (a tap that was undone doesn't count as entered)
-    const gameFlags = new Map(this.q(`
-      SELECT game_id, MAX(stat = 's') AS s FROM (
-        SELECT game_id, stat FROM stat_events GROUP BY game_id, player_id, stat HAVING SUM(delta) <> 0)
-      GROUP BY game_id`).all().map((r) => [r.game_id, { s: !!r.s }]));
-    const gamesOf = new Map();
-    const addGame = (pid, gid) => {
-      if (!gamesOf.has(pid)) gamesOf.set(pid, new Set());
-      gamesOf.get(pid).add(gid);
-    };
-    for (const r of this.q('SELECT player_id, game_id FROM game_players').all()) addGame(r.player_id, r.game_id);
-    for (const r of this.q('SELECT DISTINCT player_id, game_id FROM stat_events WHERE player_id IS NOT NULL').all()) addGame(r.player_id, r.game_id);
+    // Season totals are always numbers (0 when nothing was counted). "–" is only used per game.
     const totals = this.totals();
     const players = this.q('SELECT id, name, number, active FROM players').all()
       .filter((p) => p.active || totals.has(p.id) || gp.has(p.id))
-      .map((p) => {
-        const mine = [...(gamesOf.get(p.id) || [])];
-        const tracked = mine.some((gid) => gameFlags.has(gid));
-        const shots = mine.some((gid) => gameFlags.get(gid)?.s);
-        const t = totals.get(p.id) || { g: 0, a: 0, pm: 0, s: 0 };
-        const vals = tracked ? { g: t.g, a: t.a, pm: t.pm } : { g: null, a: null, pm: null };
-        return statRow(p, { ...vals, s: shots ? t.s : null }, gp.get(p.id) || 0, { positions: positions.get(p.id) || [] });
-      });
+      .map((p) => statRow(p, totals.get(p.id), gp.get(p.id) || 0, { positions: positions.get(p.id) || [] }));
     const record = { w: 0, l: 0, t: 0 };
     for (const g of played) record[g.us > g.them ? 'w' : g.us < g.them ? 'l' : 't']++;
     return {
@@ -559,10 +539,8 @@ class Store {
       pm: g.has_stats ? g.ppm : null,
       s: g.has_shots ? g.ps : null,
     }));
-    const sum = (k) => {
-      const vals = perGame.map((g) => g[k]).filter((x) => x !== null);
-      return vals.length ? vals.reduce((n, x) => n + x, 0) : null;
-    };
+    // The season line is always numbers; only the game-by-game rows use –.
+    const sum = (k) => perGame.reduce((n, g) => n + (g[k] ?? 0), 0);
     const gp = games.filter((g) => g.dressed && g.played).length;
     const totals = statRow(p, { g: sum('g'), a: sum('a'), pm: sum('pm'), s: sum('s') }, gp);
     return { player: { ...p, active: !!p.active }, totals, games: perGame };

@@ -282,11 +282,14 @@ describe('stats', () => {
 
     const season = (await s.call('GET', '/api/stats')).data;
     assert.equal(statFor(season.players, P(87)).s, 2);
-    // a player who only played in untracked games shows – everywhere
+    // season totals are always numbers: a player who only played in untracked games shows 0s (– is per game only)
     const kid = (await s.call('POST', '/api/players', { name: 'New Kid', number: 44 })).data.player.id;
     await s.call('PUT', `/api/games/${g3}`, { player_ids: [P(87), P(5), P(13), kid] });
     const k = statFor((await s.call('GET', '/api/stats')).data.players, kid);
-    assert.deepEqual([k.gp, k.g, k.a, k.pts, k.pm, k.s], [1, null, null, null, null, null]);
+    assert.deepEqual([k.gp, k.g, k.a, k.pts, k.pm, k.s], [1, 0, 0, 0, 0, 0]);
+    const kd = (await s.call('GET', `/api/players/${kid}`)).data;
+    assert.deepEqual([kd.totals.g, kd.totals.s], [0, 0]);
+    assert.equal(kd.games[0].g, null); // but that game's row still shows –
     for (const g of [g1, g2, g3]) await s.call('DELETE', `/api/games/${g}`);
     await s.call('DELETE', `/api/players/${kid}`);
   });
@@ -312,7 +315,7 @@ describe('stats', () => {
     assert.equal(status, 200);
     assert.match(headers.get('content-type'), /text\/csv/);
     assert.match(data, /^Number,Player,Positions played,Games,Goals,Assists,Points,Plus\/Minus,Shots on goal\r\n/);
-    assert.match(data, /87,Riley Frost,,7,5,0,5,2,-\r\n/); // no shots tracked yet -> "-" 
+    assert.match(data, /87,Riley Frost,,7,5,0,5,2,0\r\n/); // season totals are numbers, never "-" 
   });
 
   test('delete game removes its stats from season totals', async () => {
