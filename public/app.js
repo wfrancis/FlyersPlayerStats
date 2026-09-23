@@ -17,6 +17,7 @@
     layoutSig: '',
     showAll: false,
     showAllGames: false, // home page: all games instead of the most recent few
+    games: [], // the games list on the home page
     extraShown: new Set(), // players drawn under "Not in today's lineup" stay there while the board is open
     poll: null,
     form: null, // new/edit game form state
@@ -395,12 +396,11 @@
   const RECENT_GAMES = 5;
 
   async function viewGames(seq) {
-    const [{ data: { games }, cached }, { data: stats }] = await Promise.all([
-      fetchOrCache('/api/games', 'games'),
-      fetchOrCache('/api/stats', 'stats'),
-    ]);
+    // Season totals load alongside but never hold up (or break) the games list — that's how parents get into today's game.
+    const statsP = fetchOrCache('/api/stats', 'stats').catch((error) => ({ error }));
+    const { data: { games }, cached } = await fetchOrCache('/api/games', 'games');
     if (!current(seq)) return;
-    S.stats = stats;
+    S.games = games;
     // On a doubleheader day the morning game is over: only a game started or tapped in the last few hours is "live".
     const live = games.find((g) => g.date === todayISO() && g.active);
     const shown = S.showAllGames ? games : games.slice(0, RECENT_GAMES);
@@ -417,8 +417,29 @@
         ? `<ul class="game-list">${shown.map(gameCard).join('')}</ul>`
         : '<div class="empty">No games yet.<br>Tap <b>New game</b> when the puck drops.</div>'}
       ${games.length > shown.length ? `<div class="center mt"><button type="button" class="btn-text" data-action="all-games">Show all ${games.length} games</button></div>` : ''}
-      <h2 class="section-title">Season totals <span class="muted">${stats.games} game${stats.games === 1 ? '' : 's'} played</span></h2>
-      <div id="season-stats">${renderStatsBody()}</div>`);
+      <h2 class="section-title">Season totals <span class="muted" id="season-count"></span></h2>
+      <div id="season-note"></div>
+      <div id="season-stats"><div class="loading">Loading…</div></div>`);
+    const s = await statsP;
+    if (current(seq)) fillSeason(s);
+  }
+
+  function fillSeason(s) {
+    const box = document.getElementById('season-stats');
+    if (!box) return;
+    if (s.error) {
+      if (s.error.silent) return;
+      box.innerHTML = `<div class="error-box">Season totals didn't load. ${esc(s.error.message)}</div>
+        <button type="button" class="btn btn-light" data-action="retry-season">Try again</button>`;
+      return;
+    }
+    S.stats = s.data;
+    const n = s.data.games;
+    document.getElementById('season-count').textContent = `${n} game${n === 1 ? '' : 's'} played`;
+    // Outside #season-stats so sorting (which redraws that box) keeps the note.
+    document.getElementById('season-note').innerHTML = s.cached
+      ? '<div class="notice">No signal — season totals are from the last saved copy.</div>' : '';
+    box.innerHTML = renderStatsBody();
   }
 
   function gameCard(g) {
@@ -1067,9 +1088,20 @@
       const box = document.getElementById('season-stats');
       if (box && S.stats) box.innerHTML = renderStatsBody(); // only the stats redraw; the page stays put
     },
-    'all-games': () => {
+    'all-games': (el) => {
+      // Expand the list right where it is: no reload, no jump back to the top.
       S.showAllGames = true;
-      route();
+      const list = document.querySelector('.game-list');
+      if (list && S.games) list.innerHTML = S.games.map(gameCard).join('');
+      el.closest('.center')?.remove();
+    },
+    'retry-season': async () => {
+      const box = document.getElementById('season-stats');
+      if (!box) return;
+      box.innerHTML = '<div class="loading">Loading…</div>';
+      const seq = S.seq;
+      const s = await fetchOrCache('/api/stats', 'stats').catch((error) => ({ error }));
+      if (current(seq)) fillSeason(s);
     },
 
     'add-player': () => openPlayerSheet(null),
